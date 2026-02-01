@@ -1,0 +1,307 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>CINTELIS Monitor</title>
+  <style>
+    * { box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
+    body { margin: 0; display: flex; height: 100vh; background: #0b1020; color: #e7ecf5; }
+    .pane { flex: 1; padding: 14px; overflow: auto; }
+    h2 { margin: 0 0 8px; font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 6px 8px; font-size: 13px; }
+    th { text-align: left; background: #141b30; position: sticky; top: 0; }
+    tr:nth-child(odd) { background: #11182b; }
+    tr:nth-child(even){ background: #0e1525; }
+    .ts { font-size: 12px; color: #9fb2d9; margin-bottom: 6px; }
+    .toolbar { display:flex; gap:8px; align-items:center; margin-bottom:6px; }
+    .search { padding:6px 10px; border:1px solid #2f3c60; background:#0e1525; color:#e7ecf5; border-radius:6px; width:220px; }
+    .btn { padding:6px 10px; border:1px solid #2f3c60; background:#1a2340; color:#e7ecf5; border-radius:6px; cursor:pointer; }
+    .highlight { outline: 2px solid #3fbfff; }
+    .term-wrap { position: fixed; left:0; right:0; bottom:0; height:32vh; background:#0a0f1d; border-top:1px solid #1f2a46; display:none; flex-direction:column; }
+    .term-header { padding:6px 10px; background:#0f1627; display:flex; justify-content:space-between; align-items:center; color:#9fb2d9; font-size:12px; }
+    .term-body { flex:1; padding:8px 10px; overflow:auto; font-family:Consolas,monospace; color:#e7ecf5; }
+    .term-input { width:100%; padding:6px 10px; border:1px solid #2f3c60; background:#0e1525; color:#e7ecf5; border-radius:4px; font-family:Consolas,monospace; }
+  </style>
+</head>
+<body>
+  <div class="pane" id="outPane">
+    <h2>Outbound</h2>
+    <div class="ts" id="outTs"></div>
+    <table><thead><tr><th>Proto</th><th>Local</th><th>Remote</th><th>State</th><th>PID</th></tr></thead>
+      <tbody id="outBody"></tbody>
+    </table>
+  </div>
+  <div class="pane" id="inPane">
+    <div style="display:flex; align-items:center; justify-content:space-between;">
+      <h2 style="margin:0;">Inbound (listening)</h2>
+      <div class="toolbar">
+        <input id="search" class="search" placeholder="Search e.g. 192.168.0.179:64558" />
+        <label style="font-size:12px;"><input type="checkbox" id="monitorChk" /> monitor</label>
+        <button id="logBtn" class="btn">Start logging</button>
+        <button id="termBtn" class="btn">New Terminal</button>
+      </div>
+    </div>
+    <div class="ts" id="inTs"></div>
+    <table><thead><tr><th>Proto</th><th>Local</th><th>Remote</th><th>State</th><th>PID</th></tr></thead>
+      <tbody id="inBody"></tbody>
+    </table>
+  </div>
+  <div class="term-wrap" id="term">
+    <div class="term-header">
+      <span>Command Terminal (commands: start, stop, status, help)</span>
+      <button id="termClose" class="btn" style="padding:4px 8px;">Close</button>
+    </div>
+    <div class="term-body" id="termBody"></div>
+    <div style="padding:6px 10px;">
+      <input id="termInput" class="term-input" placeholder="> start logging" />
+    </div>
+  </div>
+<script>
+const outBody = document.getElementById('outBody');
+const inBody  = document.getElementById('inBody');
+const outTs   = document.getElementById('outTs');
+const inTs    = document.getElementById('inTs');
+const logBtn  = document.getElementById('logBtn');
+const search  = document.getElementById('search');
+const monitorChk = document.getElementById('monitorChk');
+const term    = document.getElementById('term');
+const termBtn = document.getElementById('termBtn');
+const termClose = document.getElementById('termClose');
+const termBody  = document.getElementById('termBody');
+const termInput = document.getElementById('termInput');
+
+let monitorTarget = '';
+let lastAlertKey = '';
+let ws;
+let monitorLog = [];
+let monitorWin = null;
+
+function render(body, rows) {
+  body.innerHTML = rows.map(r => `<tr>
+    <td>${r.proto}</td>
+    <td>${r.local}</td>
+    <td>${r.remote}</td>
+    <td>${r.state}</td>
+    <td>${r.pid}</td>
+  </tr>`).join('');
+}
+
+function ts(t){ return new Date(t).toLocaleTimeString(); }
+
+function matchRec(rec, term) {
+  if (!term) return false;
+  const hay = `${rec.local} ${rec.remote} ${rec.remoteHost || ''} ${rec.proto} ${rec.state} ${rec.pid}`.toLowerCase();
+  return hay.includes(term.toLowerCase());
+}
+
+function maybeAlert(rec) {
+  if (!monitorTarget) return;
+  const key = `${rec.proto}|${rec.local}|${rec.remote}|${rec.pid}`;
+  if (key === lastAlertKey) return;
+  const hit = matchRec(rec, monitorTarget);
+  if (!hit) return;
+  lastAlertKey = key;
+}
+
+(function connect() {
+  ws = new WebSocket(`ws://${location.host}`);
+  ws.onmessage = evt => {
+    const data = JSON.parse(evt.data);
+    const termValue = search.value.trim();
+    console.log('ws data', {out: data.outbound?.length, inb: data.inbound?.length});
+
+    // monitor matching events (OPEN/CLOSE)
+    if (monitorChk.checked && Array.isArray(data.events)) {
+      data.events.forEach(ev => {
+        if (matchRec(ev, termValue)) {
+          monitorLog.push(ev);
+          if (monitorLog.length > 500) monitorLog = monitorLog.slice(-500);
+          ensureMonitorWin();
+          renderMonitor();
+        }
+      });
+    }
+
+    const markRows = (rows, tbody) => {
+      tbody.querySelectorAll('tr').forEach(tr => tr.classList.remove('highlight'));
+      rows.forEach((r, idx) => {
+        if (matchRec(r, termValue)) {
+          const tr = tbody.children[idx];
+          if (tr) tr.classList.add('highlight');
+          maybeAlert(r);
+        }
+      });
+    };
+
+    outTs.textContent = `Updated: ${ts(data.ts)} (${data.outbound.length} items)`;
+    inTs.textContent  = `Updated: ${ts(data.ts)} (${data.inbound.length} items)`;
+    render(outBody, data.outbound);
+    render(inBody, data.inbound);
+    markRows(data.outbound, outBody);
+    markRows(data.inbound, inBody);
+    logBtn.textContent = data.logging ? 'Stop logging' : 'Start logging';
+    logBtn.dataset.state = data.logging ? 'on' : 'off';
+  };
+  ws.onclose = () => setTimeout(connect, 1000);
+})();
+
+// UI wiring (always active, independent of WS state)
+logBtn.onclick = () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ cmd: 'toggleLogging' }));
+  }
+};
+
+search.addEventListener('input', () => {
+  monitorTarget = search.value.trim();
+  lastAlertKey = '';
+});
+
+termBtn.onclick = () => {
+  term.style.display = 'flex';
+  termInput.focus();
+  pushTerm('Opened terminal. Type "help" for commands.');
+};
+
+termClose.onclick = () => { term.style.display = 'none'; };
+
+termInput.addEventListener('keydown', ev => {
+  if (ev.ctrlKey && ev.key.toLowerCase() === 'c') {
+    stopMonitoring({ keepSearch: true });
+    pushTerm('Monitoring stopped (Ctrl+C).');
+    return;
+  }
+  if (ev.key === 'Enter') {
+    const cmd = termInput.value.trim().toLowerCase();
+    termInput.value = '';
+    handleCmd(cmd);
+  }
+});
+
+function pushTerm(text) {
+  termBody.innerHTML += text.replace(/</g,'&lt;') + '<br>';
+  termBody.scrollTop = termBody.scrollHeight;
+}
+
+function renderMonitor() {
+  if (!monitorWin || monitorWin.closed) return;
+  const doc = monitorWin.document;
+  const rows = monitorLog.map(ev => `<tr>
+      <td>${ev.ts}</td>
+      <td>${ev.type}</td>
+      <td>${ev.proto}</td>
+      <td>${ev.local}</td>
+      <td>${ev.remote}</td>
+      <td>${ev.remoteHost || ''}</td>
+      <td>${ev.remotePort || ''}</td>
+      <td>${ev.state}</td>
+      <td>${ev.pid}</td>
+    </tr>`).join('');
+  const table = doc.getElementById('monTableBody');
+  if (table) table.innerHTML = rows;
+}
+
+function ensureMonitorWin() {
+  if (monitorWin && !monitorWin.closed) return;
+  monitorWin = window.open('', 'activeMonitor', 'width=950,height=520');
+  if (!monitorWin) return;
+  monitorWin.document.write(`<!doctype html>
+    <html><head>
+      <title>Active Monitoring</title>
+      <style>
+        body { margin:0; background:#0b1020; color:#e7ecf5; font-family:'Segoe UI',sans-serif; }
+        h2 { margin:12px; }
+        table { width:100%; border-collapse: collapse; }
+        th, td { padding:6px 8px; font-size:13px; }
+        th { text-align:left; background:#141b30; position:sticky; top:0; }
+        tr:nth-child(odd) { background:#11182b; }
+        tr:nth-child(even){ background:#0e1525; }
+      </style>
+    </head><body>
+      <h2 style="margin:12px;">Active Monitoring</h2>
+      <div style="padding:0 12px 12px 12px; overflow:auto; max-height:85vh;">
+        <table>
+          <thead>
+            <tr><th>Time (UTC)</th><th>Event</th><th>Proto</th><th>Local</th><th>Remote</th><th>Remote Host</th><th>Remote Port</th><th>State</th><th>PID</th></tr>
+          </thead>
+          <tbody id="monTableBody"></tbody>
+        </table>
+      </div>
+    </body></html>`);
+  monitorWin.document.close();
+}
+
+function handleCmd(cmd) {
+  if (!cmd) return;
+  pushTerm(`> ${cmd}`);
+  const tokens = cmd.split(/\s+/).filter(Boolean);
+  const head = tokens[0];
+  if (head === 'help') {
+    pushTerm('Commands:');
+    pushTerm('  start / stop               - toggle logging');
+    pushTerm('  status                     - logging state');
+    pushTerm('  clear                      - clear terminal');
+    pushTerm('  search <term> [monitor] [-log]  - set search filter; add monitor/-monitor/--monitor to enable monitoring window; add -log to start file logging');
+    pushTerm('Examples:');
+    pushTerm('  search 93.127.215.188:4444 monitor');
+    pushTerm('  search rs.bitken.cloud --monitor -log');
+    pushTerm('  search 4444');
+  } else if (cmd === 'clear') {
+    termBody.innerHTML = '';
+  } else if (head === 'search') {
+    if (tokens.length < 2) {
+      pushTerm('Usage: search <string> [monitor|-monitor|--monitor] [-log]');
+      return;
+    }
+    const termStr = tokens[1];
+    const wantMonitor = tokens.some(t => t === 'monitor' || t === '-monitor' || t === '--monitor');
+    const wantLog = tokens.some(t => t === 'log' || t === '-log' || t === '--log');
+    search.value = termStr;
+    monitorTarget = termStr;
+    monitorChk.checked = wantMonitor;
+    lastAlertKey = '';
+    monitorLog = [];
+    if (monitorWin && !monitorWin.closed) monitorWin.close();
+    pushTerm(`Search set to "${termStr}"${wantMonitor ? ' with monitoring on' : ' (monitor off)'}${wantLog ? ' and logging on' : ''}.`);
+    if (wantLog && ws && ws.readyState === WebSocket.OPEN && logBtn.dataset.state !== 'on') {
+      ws.send(JSON.stringify({ cmd: 'toggleLogging' }));
+      pushTerm('Logging started (via -log).');
+    }
+  } else if (cmd === 'start') {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ cmd: 'toggleLogging' }));
+      pushTerm('Toggled logging (start).');
+    } else {
+      pushTerm('WebSocket not connected.');
+    }
+  } else if (cmd === 'stop') {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ cmd: 'toggleLogging' }));
+      pushTerm('Toggled logging (stop).');
+    } else {
+      pushTerm('WebSocket not connected.');
+    }
+  } else if (cmd === 'status') {
+    const state = logBtn.dataset.state === 'on' ? 'logging' : 'not logging';
+    pushTerm(`Status: ${state}`);
+  } else {
+    pushTerm('Unknown command. Type "help".');
+  }
+}
+
+function stopMonitoring({ keepSearch = false } = {}) {
+  monitorChk.checked = false;
+  if (!keepSearch) {
+    monitorTarget = '';
+    search.value = '';
+  }
+  monitorLog = [];
+  if (monitorWin && !monitorWin.closed) {
+    monitorWin.close();
+  }
+}
+
+</script>
+</body>
+</html>
