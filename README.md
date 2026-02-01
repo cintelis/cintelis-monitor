@@ -1,4 +1,4 @@
-# cintelis-monitor
+ï»¿# cintelis-monitor
 
 Live Windows TCP connection monitor with search, alerting, monitoring, and logging. Polls `netstat -ano -f` every second, streams results to a split-pane UI (outbound vs inbound/listening), and can log OPEN/CLOSE events.
 
@@ -28,16 +28,20 @@ Open http://localhost:8080. Outbound on the left; inbound/listening on the right
 - Logs OPEN/CLOSE with timestamp, endpoints, PID, state. `stop` ends logging.
 
 ## In-page Terminal Commands
-- `help` — list commands and examples.
-- `start` / `stop` — toggle file logging.
-- `status` — logging state.
-- `clear` — clear the terminal view.
-- `search <term> [monitor|-monitor|--monitor] [-log]` — set search filter; `monitor` enables Active Monitoring window; `-log` turns on file logging.
+- `help` - list commands and examples.
+- `start` / `stop` - toggle file logging.
+- `status` - logging state.
+- `clear` - clear the terminal view.
+- `search <term> [monitor|-monitor|--monitor] [-log]` - set search filter; `monitor` enables Active Monitoring window; `-log` turns on file logging.
   - Examples:
     - `search 93.127.215.188:4444 monitor`
     - `search rs.bitken.cloud --monitor -log`
     - `search 4444`
-- `Ctrl+C` in the terminal box — stop monitoring and close the Active Monitoring window (keeps current search text).
+- `Ctrl+C` in the terminal box - stop monitoring and close the Active Monitoring window (keeps current search text).
+
+## Screenshots
+- Main console UI with split panes, search box, and in-page terminal: ![CINTELIS Monitor console](./CINTELIS%20Monitor%20console.png)
+- Active Monitoring view while probing the sample C2 (`rs.bitken.cloud:4444`): ![Connecting to C2 probe](./Connecting%20to%20C2%20prrobe.png)
 
 ## C2 Probe Script (testing/IR)
 - File: `probe-c2.ps1`
